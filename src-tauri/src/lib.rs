@@ -8,6 +8,7 @@ mod audio;
 mod files;
 mod models;
 mod photos;
+mod places;
 mod secrets;
 
 pub fn run() {
@@ -28,6 +29,7 @@ pub fn run() {
             files::zip_dir,
             files::unzip,
             photos::list_images,
+            places::place_name,
             photos::thumbnail,
             photos::render_jpeg,
             audio::preload_model,

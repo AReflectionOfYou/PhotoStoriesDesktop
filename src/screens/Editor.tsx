@@ -13,6 +13,7 @@ import { chooseProvider, describeError, type Suggestions } from "../lib/cleanup"
 import { detectFaces } from "../lib/faceDetector";
 import { bitmapOf, isUnedited, mapBox, NO_EDITS, render, scaled, toJpeg, unmapBox, uprightJpeg, type Edits } from "../lib/image";
 import { downloadProgress, preloadModel, watchDownloads } from "../lib/model";
+import { lookUpPlace, photoFacts } from "../lib/prefill";
 import { fs } from "../lib/tauri-adapter";
 import { useApp } from "../state";
 
@@ -51,6 +52,9 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
   const [conflicts, setConflicts] = useState<MetadataConflict[] | null>(null);
   const [pendingSave, setPendingSave] = useState<null | ((choices: Record<string, "embedded" | "ours">) => Promise<void>)>(null);
   const [, force] = useState(0);
+  const [lookingUp, setLookingUp] = useState(false);
+  const addedHere = useRef(new Set<string>());
+  const [placeAlways, setPlaceAlways] = useState(true);
   const touch = () => { setDirty(true); setSaved(false); force((n) => n + 1); };
 
   // Get the speech model ready now, so Record starts at once: right away if
@@ -68,6 +72,22 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
     (async () => {
       const d = await readPhoto(fs, app.root, photoId);
       const bytes = await uprightJpeg(`${dir}/${d.files.original}`);
+      // The first time a photo is opened, fill When and Where from the photo file itself.
+      if (!d.photo.file_metadata?.prefilled_at) {
+        const facts = photoFacts(await fs.readFile(`${dir}/${d.files.original}`), bytes);
+        const now0 = d.details ?? {};
+        const patch: Record<string, unknown> = {};
+        if (facts.date && !now0.date_text) Object.assign(patch, { date_text: facts.date, date_edtf: toEdtf(facts.date) });
+        if (facts.place && !now0.place_text) patch.place_text = facts.place;
+        if (facts.latitude !== undefined && now0.latitude == null) Object.assign(patch, { latitude: facts.latitude, longitude: facts.longitude });
+        if (!patch.place_text && !now0.place_text && facts.latitude !== undefined && app.settings.lookUpPlaces) {
+          const name = await lookUpPlace(facts.latitude, facts.longitude!).catch(() => null);
+          if (name) patch.place_text = name;
+        }
+        if (Object.keys(patch).length) setDetails(d, patch, app.owner, { source: "photo-file" });
+        d.photo.file_metadata = { ...(d.photo.file_metadata ?? {}), prefilled_at: new Date().toISOString() };
+        await writePhoto(fs, app.root, d, app.project).catch(() => {});
+      }
       const bmp = await bitmapOf(bytes);
       setOriginal(bmp);
       setPreview(await createImageBitmap(scaled(bmp, 1800)));
@@ -97,7 +117,7 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
     c.width = shown.width;
     c.height = shown.height;
     c.getContext("2d")!.drawImage(shown, 0, 0);
-  }, [shown]);
+  }, [shown, !!doc]); // the canvas only exists once the photo's details are loaded
 
   // Find faces once, the first time the photo is opened.
   useEffect(() => {
@@ -121,6 +141,39 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
   const knownNames = app.project.people.map((p) => String(p.display_name));
   const peopleHere = [...new Set(doc.people_in_photo.filter((p) => !p.removed_at).map((p) => String(p.person_id)))];
 
+  /** Names and face boxes are kept as soon as they change, without waiting for Save. */
+  async function keepPeople() {
+    force((n) => n + 1);
+    try {
+      await writePhoto(fs, app.root, doc!, app.project);
+      await app.saveProjectData(["people"]);
+    } catch (e) {
+      setProblem(`Couldn't save the names: ${e}`);
+    }
+  }
+
+  /** True when a field still holds the value read from the photo file. */
+  const fromFile = (field: string, value: string) => {
+    const h = doc!.field_history.filter((x) => x.field === field).at(-1);
+    return !!value && h?.source === "photo-file" && h.new_value === value;
+  };
+
+  async function findPlace() {
+    const d = doc!.details;
+    if (d?.latitude == null || d?.longitude == null) return;
+    setLookingUp(true);
+    setProblem("");
+    try {
+      const name = await lookUpPlace(Number(d.latitude), Number(d.longitude));
+      if (name) { setPlace(name); touch(); } else setProblem("OpenStreetMap has no place name for this spot.");
+      if (placeAlways) await app.updateSettings({ lookUpPlaces: true });
+    } catch (e) {
+      setProblem(`Couldn't look up the place (is the computer online?): ${e}`);
+    } finally {
+      setLookingUp(false);
+    }
+  }
+
   function changeEdits(next: Edits) {
     // Keep face boxes on the same faces when the crop or rotation changes.
     for (const f of faces) {
@@ -135,24 +188,39 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
 
   function nameFace(faceId: string, name: string) {
     const n = name.trim();
-    if (!n) return tagFace(doc!, faceId, null, app.owner), touch();
-    const person = ensurePerson(app.project, n, app.owner);
-    tagFace(doc!, faceId, String(person.id), app.owner);
-    touch();
+    const before = doc!.faces.find((f) => f.id === faceId)?.person_id ?? null;
+    if (!n) tagFace(doc!, faceId, null, app.owner);
+    else {
+      const known = new Set(app.project.people.map((p) => p.id));
+      const person = ensurePerson(app.project, n, app.owner);
+      if (!known.has(person.id)) addedHere.current.add(String(person.id));
+      tagFace(doc!, faceId, String(person.id), app.owner);
+    }
+    forgetIfUnused(before);
+    return keepPeople();
+  }
+
+  /** A name typed here and then changed (say "Rose" → "Rose Martinez") shouldn't linger in the project's list of people. */
+  function forgetIfUnused(personId: string | null) {
+    if (!personId || !addedHere.current.has(personId)) return;
+    const used = doc!.faces.some((f) => f.person_id === personId) || doc!.people_in_photo.some((p) => p.person_id === personId && !p.removed_at);
+    if (used) return;
+    app.project.people.splice(app.project.people.findIndex((p) => p.id === personId), 1);
+    addedHere.current.delete(personId);
   }
 
   function addPersonWithoutFace(name: string) {
     const person = ensurePerson(app.project, name, app.owner);
     if (doc!.people_in_photo.some((p) => p.person_id === person.id && !p.removed_at)) return;
     doc!.people_in_photo.push({ id: uuid(), group_id: doc!.photo.group_id, photo_id: doc!.photo.id, person_id: person.id, face_id: null, certainty: null, source: "person", added_by: app.owner, added_at: new Date().toISOString(), removed_by: null, removed_at: null });
-    touch();
+    void keepPeople();
   }
 
   function removePerson(personId: string) {
     const now = new Date().toISOString();
     for (const f of faces) if (f.person_id === personId) tagFace(doc!, f.id, null, app.owner);
     for (const p of doc!.people_in_photo) if (p.person_id === personId && !p.removed_at) Object.assign(p, { removed_by: app.owner, removed_at: now });
-    touch();
+    void keepPeople();
   }
 
   async function runCleanup() {
@@ -239,7 +307,7 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
       await fs.writeFile(`${dir}/thumb.jpg`, await toJpeg(scaled(canvas, 480), 0.85));
       d.files.image = "image.jpg";
       d.files.thumb = "thumb.jpg";
-      d.photo.file_metadata = { embedded_in_original: Object.fromEntries(Object.entries(embedded).filter(([k]) => k !== "sources")), sources: embedded.sources, choices: remembered, written_at: new Date().toISOString() };
+      d.photo.file_metadata = { ...(d.photo.file_metadata ?? {}), embedded_in_original: Object.fromEntries(Object.entries(embedded).filter(([k]) => k !== "sources")), sources: embedded.sources, choices: remembered, written_at: new Date().toISOString() };
       await writePhoto(fs, app.root, d, app.project);
       await app.saveProjectData(["people"]);
       setDirty(false);
@@ -283,11 +351,11 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
             onSelect={setSelected}
             onBoxChange={(id, b) => {
               const f = doc.faces.find((x) => x.id === id);
-              if (f) { Object.assign(f, { bbox_x: b.x, bbox_y: b.y, bbox_w: b.w, bbox_h: b.h }); touch(); }
+              if (f) { Object.assign(f, { bbox_x: b.x, bbox_y: b.y, bbox_w: b.w, bbox_h: b.h }); void keepPeople(); }
             }}
             onDrawn={(b) => {
               if (mode === "crop") changeEdits({ ...edits, crop: b });
-              if (mode === "addFace") { const f = addFace(doc, b, app.owner, { detector: "manual" }); setSelected(f.id); touch(); }
+              if (mode === "addFace") { const f = addFace(doc, b, app.owner, { detector: "manual" }); setSelected(f.id); void keepPeople(); }
               setMode("view");
             }}
           />
@@ -310,9 +378,10 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
               <h3 id="faces-h">People in this photo</h3>
               <button aria-pressed={mode === "addFace"} onClick={() => setMode(mode === "addFace" ? "view" : "addFace")}>{mode === "addFace" ? "Cancel" : "Add a face box"}</button>
             </div>
+            <p class="small">Use each person's first and last name, like “Rose Martinez”, so they're recognized in every photo. If two people share a first and last name, add a middle name or initial: “Rose A. Martinez”.</p>
             {mode === "addFace" && <p class="small muted">Drag a box around the face that was missed.</p>}
             {!faces.length && <p class="small muted">{doc.photo.face_detection ? "No faces were found. You can add a box by hand, or just add names below." : "Looking for faces…"}</p>}
-            {faces.length > 0 && <p class="small muted">Drag a box to move it, or its yellow corner to resize it. Then type each person's name below.</p>}
+            {faces.length > 0 && <p class="small muted">Drag a box to move it, or its yellow corner to resize it. Names and boxes are saved as you go.</p>}
             {faces.map((f, i) => (
               <FaceRow key={f.id} index={i + 1} name={personName(f.person_id)} selected={selected === f.id} knownNames={knownNames}
                 onSelect={() => setSelected(f.id)} onName={(n) => nameFace(f.id, n)} onRemove={() => { dismissFace(doc, f.id, app.owner); touch(); }} />
@@ -323,7 +392,6 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
                 <span class="chip" key={id}>{personName(id)}<button class="quiet" aria-label={`Remove ${personName(id)}`} onClick={() => removePerson(id)}>×</button></span>
               ))}
             </div>
-            <datalist id="known-names">{knownNames.map((n) => <option key={n} value={n} />)}</datalist>
           </section>
         </section>
 
@@ -350,11 +418,23 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
             <label>Title<input type="text" value={title} onInput={(e) => { setTitle(e.currentTarget.value); touch(); }} /></label>
             <label>The story<textarea rows={8} value={story} placeholder={transcript ? "Clean up the transcript, or type the story here." : "Record or type the story here."} onInput={(e) => { setStoryText(e.currentTarget.value); setCleanup((c) => c ?? { method: "none", model: null }); touch(); }} /></label>
             <div class="row" style="align-items:end">
-              <label style="flex:2">When<input type="text" value={dateText} placeholder="summer of 1965, the 1970s, about 1958…" onInput={(e) => { setDateText(e.currentTarget.value); touch(); }} /></label>
+              <label style="flex:2">When<input type="text" autocomplete="off" value={dateText} placeholder="summer of 1965, the 1970s, about 1958…" onInput={(e) => { setDateText(e.currentTarget.value); touch(); }} /></label>
               <label style="flex:1">How sure<select value={dateSure} onChange={(e) => { setDateSure(e.currentTarget.value as Certainty); touch(); }}><option value="">—</option><option value="sure">Sure</option><option value="likely">Think so</option><option value="guess">Guessing</option></select></label>
             </div>
             {dateText && <p class="small muted">{toEdtf(dateText) ? `Saved for archives as ${toEdtf(dateText)}.` : "No year found; it's kept as written."}</p>}
-            <label>Where<input type="text" value={place} onInput={(e) => { setPlace(e.currentTarget.value); touch(); }} /></label>
+            {fromFile("date_text", dateText) && <p class="small muted">This date comes from the photo file. If this is a scan or a photo of a print, it's when the copy was made, so change it to when the photo was taken.</p>}
+            <label>Where<input type="text" autocomplete="off" value={place} onInput={(e) => { setPlace(e.currentTarget.value); touch(); }} /></label>
+            {fromFile("place_text", place) && <p class="small muted">This place comes from the photo file.</p>}
+            {!place && doc.details?.latitude != null && (
+              <div class="notice stack">
+                <p class="small">This photo has map coordinates ({Number(doc.details.latitude).toFixed(4)}, {Number(doc.details.longitude).toFixed(4)}).</p>
+                <div class="row">
+                  <button class="small" onClick={findPlace} disabled={lookingUp}>{lookingUp ? "Looking up…" : "Find the place name"}</button>
+                  <label class="inline small"><input type="checkbox" checked={placeAlways} onChange={(e) => setPlaceAlways(e.currentTarget.checked)} /> Do this for every new photo</label>
+                </div>
+                <p class="small muted">This sends only the coordinates (not the photo) to OpenStreetMap. You can change this later in Settings.</p>
+              </div>
+            )}
             <label>Notes<textarea rows={3} value={notes} onInput={(e) => { setNotes(e.currentTarget.value); touch(); }} /></label>
             {suggested && <SuggestionsPanel s={suggested} title={title} date={dateText} place={place} peopleHere={peopleHere.map(personName)}
               onTitle={(v) => { setTitle(v); touch(); }} onDate={(v) => { setDateText(v); touch(); }} onPlace={(v) => { setPlace(v); touch(); }} onPerson={addPersonWithoutFace} onDone={() => setSuggested(null)} />}
@@ -461,17 +541,68 @@ function Stage({ canvasRef, size, mode, crop, faces, selected, onSelect, onDrawn
 
 function FaceRow({ index, name, selected, knownNames, onSelect, onName, onRemove }: { index: number; name: string; selected: boolean; knownNames: string[]; onSelect(): void; onName(n: string): void; onRemove(): void }) {
   const [value, setValue] = useState(name);
+  const [justSaved, setJustSaved] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => setValue(name), [name]);
   useEffect(() => { if (selected) input.current?.focus({ preventScroll: true }); }, [selected]);
+  const changed = value.trim() !== name;
+  const commit = (n = value) => {
+    if (n.trim() === name) return;
+    setValue(n.trim());
+    onName(n);
+    setJustSaved(true);
+  };
   return (
-    <div class="row" style={selected ? "background:#fff;border-radius:10px;padding:4px" : "padding:4px"}>
-      <span class="small" style="width:4.5rem">Face {index}</span>
-      <input ref={input} type="text" list="known-names" value={value} placeholder="Name" style="flex:1"
-        onFocus={onSelect} onInput={(e) => setValue(e.currentTarget.value)} onBlur={() => value !== name && onName(value)}
-        onKeyDown={(e) => e.key === "Enter" && onName(value)} aria-label={`Name for face ${index}`} />
-      <SpeakName onHeard={(n) => { setValue(n); onName(n); }} />
-      <button class="quiet small" onClick={onRemove} title="Not a face">Not a face</button>
+    <div class={`face-row ${selected ? "selected" : ""}`}>
+      <div class="row">
+        <span class="small" style="width:4.5rem">Face {index}</span>
+        <NameInput inputRef={input} value={value} knownNames={knownNames} placeholder="First and last name" label={`Name for face ${index}`}
+          onFocus={onSelect} onChange={(v) => { setValue(v); setJustSaved(false); }} onCommit={commit} />
+        {changed
+          ? <button class="small" onClick={() => commit()}>Save name</button>
+          : name && <span class="small saved" role="status">✓ {justSaved ? "Saved" : "Named"}</span>}
+        <SpeakName onHeard={(n) => commit(n)} />
+        <button class="quiet small" onClick={onRemove} title="Not a face">Not a face</button>
+      </div>
+      {!changed && name && !/\s/.test(name) && <p class="small muted tip">Tip: add a last name if you know it, so this person isn't mixed up with someone else named {name}.</p>}
+    </div>
+  );
+}
+
+/**
+ * A name box with our own list of matching names from this project. (The
+ * browser's built-in suggestion list shows up in the wrong place in the app.)
+ */
+function NameInput({ value, knownNames, placeholder, label, inputRef, onChange, onCommit, onFocus, blurCommits = true }: {
+  value: string; knownNames: string[]; placeholder: string; label: string; inputRef?: preact.RefObject<HTMLInputElement>;
+  onChange(v: string): void; onCommit(v: string): void; onFocus?(): void; blurCommits?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const q = value.trim().toLowerCase();
+  const matches = q ? knownNames.filter((n) => n.toLowerCase().includes(q) && n.toLowerCase() !== q).slice(0, 6) : [];
+  const show = open && matches.length > 0;
+  const pick = (n: string) => { onChange(n); onCommit(n); setOpen(false); setActive(-1); };
+  return (
+    <div class="name-field">
+      <input ref={inputRef} type="text" value={value} placeholder={placeholder} aria-label={label}
+        autocomplete="off" autocorrect="off" spellcheck={false} role="combobox" aria-expanded={show} aria-autocomplete="list"
+        onFocus={() => { setOpen(true); onFocus?.(); }}
+        onInput={(e) => { onChange(e.currentTarget.value); setOpen(true); setActive(-1); }}
+        onBlur={() => { setOpen(false); if (blurCommits) onCommit(value); }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" && matches.length) { e.preventDefault(); setOpen(true); setActive((a) => (a + 1) % matches.length); }
+          else if (e.key === "ArrowUp" && matches.length) { e.preventDefault(); setActive((a) => (a <= 0 ? matches.length - 1 : a - 1)); }
+          else if (e.key === "Escape") setOpen(false);
+          else if (e.key === "Enter") { e.preventDefault(); if (show && active >= 0) pick(matches[active]); else { setOpen(false); onCommit(value); } }
+        }} />
+      {show && (
+        <ul class="suggest" role="listbox" aria-label="Names already in this project">
+          {matches.map((n, i) => (
+            <li key={n} role="option" aria-selected={i === active} onMouseDown={(e) => { e.preventDefault(); pick(n); }}>{n}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -495,12 +626,11 @@ function SpeakName({ onHeard }: { onHeard(name: string): void }) {
 
 function AddName({ knownNames, label, onAdd }: { knownNames: string[]; label: string; onAdd(n: string): void }) {
   const [v, setV] = useState("");
-  const add = () => { if (v.trim()) { onAdd(v.trim()); setV(""); } };
+  const add = (n = v) => { if (n.trim()) { onAdd(n.trim()); setV(""); } };
   return (
     <div class="row">
-      <input type="text" list="known-names" value={v} placeholder={label} aria-label={label} style="flex:1" onInput={(e) => setV(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
-      <button onClick={add} disabled={!v.trim()}>Add</button>
-      <datalist id="known-names-2">{knownNames.map((n) => <option key={n} value={n} />)}</datalist>
+      <NameInput value={v} knownNames={knownNames} placeholder={label} label={label} onChange={setV} onCommit={(n) => add(n)} blurCommits={false} />
+      <button onClick={() => add()} disabled={!v.trim()}>Add</button>
     </div>
   );
 }

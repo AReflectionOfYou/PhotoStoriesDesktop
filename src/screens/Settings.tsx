@@ -70,6 +70,7 @@ export function SettingsDialog({ onClose }: { onClose(): void }) {
         <label class="inline"><input type="radio" name="size" checked={s.copySize === "full"} onChange={() => app.updateSettings({ copySize: "full" })} /> Full size (an exact copy)</label>
         <label class="inline"><input type="radio" name="size" checked={s.copySize === "resized"} onChange={() => app.updateSettings({ copySize: "resized" })} /> Smaller copies, at most <input type="number" min={800} max={10000} step={100} style="width:6rem" value={s.maxLongEdge} onChange={(e) => app.updateSettings({ maxLongEdge: Math.max(800, +e.currentTarget.value || 3000) })} /> pixels on the long side</label>
         <label class="inline"><input type="checkbox" checked={s.embedStory} onChange={(e) => app.updateSettings({ embedStory: e.currentTarget.checked })} /> Write the story inside the copy's photo file too, so it travels with the photo</label>
+        <label class="inline"><input type="checkbox" checked={s.lookUpPlaces} onChange={(e) => app.updateSettings({ lookUpPlaces: e.currentTarget.checked })} /> When a photo has map coordinates, look up the place name for Where (sends only the coordinates to OpenStreetMap)</label>
       </section>
 
       <section class="card stack">

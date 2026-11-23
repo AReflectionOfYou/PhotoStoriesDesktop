@@ -21,6 +21,8 @@ export interface Settings {
   embedStory: boolean;
   /** Keep the recording beside the photo (audio/<id>.wav). */
   keepRecordings: boolean;
+  /** Turn a photo's map coordinates into a place name, using OpenStreetMap (only the coordinates are sent). */
+  lookUpPlaces: boolean;
   provider: Provider;
   anthropicModel: string;
   openaiModel: string;
@@ -35,6 +37,7 @@ export const DEFAULTS: Settings = {
   maxLongEdge: 3000,
   embedStory: true,
   keepRecordings: true,
+  lookUpPlaces: false,
   provider: "none",
   anthropicModel: "claude-opus-5-5",
   openaiModel: "gpt-5-mini",

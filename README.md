@@ -62,7 +62,7 @@ PS_MODEL=~/Library/Application\ Support/io.github.areflectionofyou.photostories/
 
 ## Privacy
 
-Photos, recordings and transcripts stay on this computer. The only network use is the one-time speech model download (from the whisper.cpp project on Hugging Face) and, only if you add your own API key, sending a transcript's text for cleanup. API keys are kept in the system keychain.
+Photos, recordings and transcripts stay on this computer. The only network use is the one-time speech model download (from the whisper.cpp project on Hugging Face) sending a transcript's text for cleanup, only if you add your own API key, and looking up a place name from a photo's map coordinates, only when you click **Find the place name** or turn that on in Settings. For that lookup, only the coordinates are sent to [OpenStreetMap](https://nominatim.openstreetmap.org), never the photo. API keys are kept in the system keychain.
 
 ## License
 

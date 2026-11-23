@@ -126,6 +126,9 @@ async function handle(cmd: string, a: any, options?: { headers?: Record<string, 
       rec = null;
       return { text, seconds: 12, model: "small", wav: null };
     }
+    case "place_name": // stands in for OpenStreetMap; records what would be sent
+      ((window as any).__placeCalls ??= []).push([a.lat, a.lon]);
+      return JSON.stringify({ suburb: "7th Arrondissement", city: "Paris", state: "Ile-de-France", region: "Metropolitan France", country: "France" });
     case "get_api_key": return null;
     case "set_api_key": case "delete_api_key": return;
     case "plugin:path|resolve_directory": return "/config";
@@ -162,7 +165,7 @@ for (const n of ["house", "boat", "hills", "garden"]) {
 }
 // ?faces: also load test photos from dev/local/ (git-ignored; synthetic faces only, never committed).
 if (new URLSearchParams(location.search).has("faces")) {
-  for (const n of ["single", "tall", "wide"]) {
+  for (const n of ["single", "tall", "wide", "gps", "gps2"]) {
     const r = await fetch(`/dev/local/${n}.jpg`);
     if (r.ok) put(`/home/demo/Pictures/${n}.jpg`, new Uint8Array(await r.arrayBuffer()));
   }
