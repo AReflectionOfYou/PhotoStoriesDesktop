@@ -231,6 +231,18 @@ fn capture(shared: Arc<Shared>, ready: mpsc::Sender<Result<(), String>>) {
     }
 }
 
+/// Load the speech model ahead of time (for example when a photo is opened),
+/// so pressing Record starts at once. Does nothing if it isn't downloaded yet.
+#[tauri::command]
+pub async fn preload_model(app: tauri::AppHandle, model: String) -> Result<bool, String> {
+    let path = model_path(&app, &model)?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let path = path.to_string_lossy().into_owned();
+    tauri::async_runtime::spawn_blocking(move || context(&path).map(|_| true)).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn start_recording(app: tauri::AppHandle, state: tauri::State<'_, Recorder>, model: String, names: Option<Vec<String>>) -> Result<(), String> {
     if state.session.lock().unwrap().is_some() {

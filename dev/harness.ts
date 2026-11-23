@@ -61,6 +61,8 @@ function emit(event: string, payload: unknown) {
 const SCRIPT = "um so this is the the house we grew up in on Elm Street. My dad built it himself in the summer of 1965 and uh Grandma Rose lived with us.";
 let rec: { words: string[]; shown: number; timer: number; paused: boolean } | null = null;
 
+let modelReady = !new URLSearchParams(location.search).has("nomodel");
+
 // The open-file dialog returns whatever the test queued.
 (window as any).__picks = [] as string[];
 
@@ -94,7 +96,17 @@ async function handle(cmd: string, a: any, options?: { headers?: Record<string, 
     }
     case "thumbnail": return (await jpegOf(read(a.path), a.max, 0.8)).buffer;
     case "render_jpeg": return (await jpegOf(read(a.path), a.maxLongEdge, (a.quality ?? 92) / 100)).buffer;
-    case "model_status": return { name: a.name, present: true, bytes: 487601967, expected_bytes: 487601967 };
+    case "model_status": return { name: a.name, present: modelReady, bytes: modelReady ? 487601967 : 0, expected_bytes: 487601967 };
+    case "download_model": {
+      // With ?nomodel, a first launch: the model arrives over a few seconds.
+      for (let got = 0; got <= 10; got++) {
+        emit("model-download", { name: a.name, received: got * 48760196, total: 487601967 });
+        await new Promise((r) => setTimeout(r, 900));
+      }
+      modelReady = true;
+      return;
+    }
+    case "preload_model": (window as any).__preloads = ((window as any).__preloads ?? 0) + 1; return modelReady;
     case "start_recording": {
       const words = SCRIPT.split(" ");
       rec = { words, shown: 0, paused: false, timer: window.setInterval(() => {

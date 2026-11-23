@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { loadProject, saveProject, type ProjectData } from "photostories-core";
 import { Footer } from "./components/Footer";
+import { ModelNote } from "./components/ModelNote";
 import { fs } from "./lib/tauri-adapter";
+import { ensureModel } from "./lib/model";
 import { loadSettings, saveSettings, type Settings } from "./lib/settings";
 import { Editor } from "./screens/Editor";
 import { ExportDialog } from "./screens/ExportDialog";
@@ -24,6 +26,9 @@ export function App() {
   useEffect(() => {
     loadSettings().then(async (s) => {
       setSettings(s);
+      // Fetch the speech model in the background while the person gets started.
+      // If there's no internet now, it's offered again when they first record.
+      ensureModel(s.model).catch(() => {});
       if (s.projectRoot && (await fs.exists(`${s.projectRoot}/group.json`))) setProject(await loadProject(fs, s.projectRoot));
     });
   }, []);
@@ -57,7 +62,7 @@ export function App() {
   if (!state) {
     return (
       <div class="shell">
-        <header class="topbar"><div class="title"><h1>Photo Stories</h1></div></header>
+        <header class="topbar"><div class="title"><h1>Photo Stories</h1></div><ModelNote model={settings.model} /></header>
         <main class="content">
           <Welcome
             settings={settings}
@@ -83,6 +88,7 @@ export function App() {
             <span class="muted small">{state.root}</span>
           </div>
           <nav class="row" aria-label="Project">
+            <ModelNote model={state.settings.model} />
             <button onClick={() => setDialog("import")}>Import</button>
             <button onClick={() => setDialog("export")}>Export</button>
             <button onClick={() => setDialog("settings")}>Settings</button>

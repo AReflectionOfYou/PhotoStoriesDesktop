@@ -4,7 +4,9 @@
 
 use futures_util::StreamExt;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
@@ -40,10 +42,35 @@ struct Progress {
     total: u64,
 }
 
+static DOWNLOADING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// Marks a model as downloading for as long as it's alive.
+struct InProgress(String);
+impl InProgress {
+    fn start(name: &str) -> Option<Self> {
+        let mut set = DOWNLOADING.lock().unwrap();
+        set.get_or_insert_with(HashSet::new).insert(name.to_string()).then(|| InProgress(name.to_string()))
+    }
+}
+impl Drop for InProgress {
+    fn drop(&mut self) {
+        if let Some(set) = DOWNLOADING.lock().unwrap().as_mut() {
+            set.remove(&self.0);
+        }
+    }
+}
+
 /// Download a model from the whisper.cpp project, reporting "model-download" progress events.
+/// Only one download of a model runs at a time.
 #[tauri::command]
 pub async fn download_model(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let path = model_path(&app, &name)?;
+    if path.exists() {
+        return Ok(());
+    }
+    let Some(_guard) = InProgress::start(&name) else {
+        return Err("already downloading".into());
+    };
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     let part = path.with_extension("part");
     let url = format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin");

@@ -12,6 +12,7 @@ import { Recorder, type Finished } from "../components/Recorder";
 import { chooseProvider, describeError, type Suggestions } from "../lib/cleanup";
 import { detectFaces } from "../lib/faceDetector";
 import { bitmapOf, isUnedited, mapBox, NO_EDITS, render, scaled, toJpeg, unmapBox, uprightJpeg, type Edits } from "../lib/image";
+import { downloadProgress, preloadModel, watchDownloads } from "../lib/model";
 import { fs } from "../lib/tauri-adapter";
 import { useApp } from "../state";
 
@@ -51,6 +52,16 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
   const [pendingSave, setPendingSave] = useState<null | ((choices: Record<string, "embedded" | "ours">) => Promise<void>)>(null);
   const [, force] = useState(0);
   const touch = () => { setDirty(true); setSaved(false); force((n) => n + 1); };
+
+  // Get the speech model ready now, so Record starts at once: right away if
+  // it's downloaded, or as soon as a background download finishes.
+  useEffect(() => {
+    const m = app.settings.model;
+    preloadModel(m);
+    return watchDownloads(() => {
+      if (downloadProgress(m) === null) preloadModel(m);
+    });
+  }, [app.settings.model]);
 
   // Load the sidecar and the as-copied original.
   useEffect(() => {

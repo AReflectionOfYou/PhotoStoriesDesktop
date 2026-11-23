@@ -6,9 +6,10 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "preact/hooks";
 import { useApp } from "../state";
 
+import { downloadProgress, ensureModel, modelStatus, watchDownloads, type ModelStatus } from "../lib/model";
+
 interface Live { committed: string; partial: string; seconds: number }
 export interface Finished { text: string; seconds: number; model: string; wav: string | null }
-interface ModelStatus { present: boolean; bytes: number; expected_bytes: number }
 
 const mins = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
@@ -16,25 +17,24 @@ export function useModel() {
   const app = useApp();
   const model = app.settings.model;
   const [status, setStatus] = useState<ModelStatus | null>(null);
-  const [progress, setProgress] = useState<number | null>(null);
+  const [progress, setProgress] = useState<number | null>(downloadProgress(model));
   const [problem, setProblem] = useState("");
   useEffect(() => {
-    invoke<ModelStatus>("model_status", { name: model }).then(setStatus);
+    modelStatus(model).then(setStatus);
+    setProgress(downloadProgress(model));
+    // Follow the shared download (it may have started in the background when the app opened).
+    return watchDownloads(() => {
+      const p = downloadProgress(model);
+      setProgress(p);
+      if (p === null) modelStatus(model).then(setStatus);
+    });
   }, [model]);
   async function download() {
     setProblem("");
-    setProgress(0);
-    const un = await listen<{ name: string; received: number; total: number }>("model-download", (e) => {
-      if (e.payload.name === model && e.payload.total) setProgress(e.payload.received / e.payload.total);
-    });
     try {
-      await invoke("download_model", { name: model });
-      setStatus(await invoke<ModelStatus>("model_status", { name: model }));
+      await ensureModel(model);
     } catch (e) {
-      setProblem(String(e));
-    } finally {
-      un();
-      setProgress(null);
+      setProblem(`The download didn't finish (${e}). Check the internet connection and try again.`);
     }
   }
   return { model, status, progress, problem, download };

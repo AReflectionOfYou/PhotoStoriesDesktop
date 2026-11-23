@@ -30,6 +30,7 @@ pub fn run() {
             photos::list_images,
             photos::thumbnail,
             photos::render_jpeg,
+            audio::preload_model,
             audio::start_recording,
             audio::pause_recording,
             audio::resume_recording,

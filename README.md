@@ -16,12 +16,16 @@ Version 0.1.0. Built and tested on macOS (Apple silicon; macOS 11 or later). Win
 2. **Your photos:** choose a folder and see its thumbnails (JPEG, PNG, WebP, TIFF, GIF, BMP; HEIC on a Mac).
 3. **Copy:** choosing a photo copies it into the project (full size, or resized if you prefer). The original is only read.
 4. **Edit the copy:** rotate, crop, brightness, contrast, auto-enhance. Edits are always re-applied from the as-copied photo, and **Reset** returns to it.
-5. **Record:** talk about the photo. Whisper (small model by default, medium optional) transcribes on this computer as you speak. Pause, record more, or edit the text by hand. Names already in the project help Whisper spell them.
+5. **Record:** talk about the photo. Whisper (small model by default, medium optional) transcribes on this computer as you speak. Pause, record more, or edit the text by hand. Names already in the project help Whisper spell them. The speech model (about 490 MB) downloads in the background the first time the app opens, so it's usually ready before you record, and it's loaded as soon as you open a photo, so recording starts at once.
 6. **Faces:** faces are found on this computer (MediaPipe BlazeFace; boxes only, never identity). Name each box by typing or saying the name; earlier names are suggested. Add a missed box, or mark a box "Not a face".
 7. **Clean up:** the transcript becomes a short story in your own words, with a suggested title, people, place and date to review. Without an API key, a light local cleanup is used. With your own Anthropic or OpenAI key, that service does it, with the same instructions either way. Only the transcript text is sent, never the photo.
 8. **Save:** writes the sidecar (`photo.json`, with the Dublin Core mapping) and fills in missing metadata inside the copy (title, story, date, place, people, face regions). If the photo already holds a different value, you're shown both and choose.
 9. **Export:** one BagIt zip with the photos, sidecars, thumbnails, recordings, a readme and `START HERE.html`. It is checked before it's finished.
 10. **Import:** bring in an earlier archive (from any version of Photo Stories). You see what's new, what's already here (matched by checksum: skip, replace or keep both) and which names look alike (merge or keep separate) before anything is written.
+
+## Planned for later
+
+- **Cloud transcription (optional).** Let people who have an OpenAI API key send recordings to OpenAI's transcription service instead of using the local model. It would skip the one-time model download and the short model-loading pause, at the cost of sending the recorded voice off the computer, needing internet every time, per-minute charges to their key, and text appearing in chunks rather than live. Local transcription stays the default; Anthropic's API has no speech-to-text, so a Claude key wouldn't help here.
 
 ## Building
 
