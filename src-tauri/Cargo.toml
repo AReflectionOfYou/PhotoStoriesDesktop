@@ -1,6 +1,6 @@
 [package]
 name = "photostories-desktop"
-version = "0.1.2"
+version = "0.1.3"
 description = "Photo Stories for your computer"
 authors = ["Michael A. Heroux"]
 license = "MIT"
