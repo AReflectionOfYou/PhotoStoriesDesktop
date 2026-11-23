@@ -4,7 +4,9 @@ import { formatAddress, friendlyDate, photoFacts } from "../src/lib/prefill.ts";
 
 test("camera dates read naturally", () => {
   assert.equal(friendlyDate("2019-07-04"), "July 4, 2019");
-  assert.equal(friendlyDate("2019-07-04T10:30:00"), "July 4, 2019");
+  assert.equal(friendlyDate("2019-07-04T10:30:00"), "July 4, 2019, 10:30 AM");
+  assert.equal(friendlyDate("2019-07-04T00:05:00-05:00"), "July 4, 2019, 12:05 AM");
+  assert.equal(friendlyDate("2019-07-04T15:05:00"), "July 4, 2019, 3:05 PM");
   assert.equal(friendlyDate("1965-08"), "August 1965");
   assert.equal(friendlyDate("1958"), "1958");
   assert.equal(friendlyDate("sometime"), "sometime");

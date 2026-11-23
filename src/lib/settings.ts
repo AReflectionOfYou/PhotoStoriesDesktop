@@ -23,6 +23,8 @@ export interface Settings {
   keepRecordings: boolean;
   /** Turn a photo's map coordinates into a place name, using OpenStreetMap (only the coordinates are sent). */
   lookUpPlaces: boolean;
+  /** The story tips have been shown once (they open by themselves the first time). */
+  storyTipsSeen: boolean;
   provider: Provider;
   anthropicModel: string;
   openaiModel: string;
@@ -38,6 +40,7 @@ export const DEFAULTS: Settings = {
   embedStory: true,
   keepRecordings: true,
   lookUpPlaces: false,
+  storyTipsSeen: false,
   provider: "none",
   anthropicModel: "claude-opus-5-5",
   openaiModel: "gpt-5-mini",

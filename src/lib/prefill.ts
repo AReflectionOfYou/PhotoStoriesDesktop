@@ -15,14 +15,18 @@ export interface PhotoFacts {
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-/** "2019-07-04" (or "2019-07-04T10:00:00") → "July 4, 2019". Anything else is returned as is. */
+/** "2019-07-04" → "July 4, 2019"; "2019-07-04T15:05:00" → "July 4, 2019, 3:05 PM". Anything else is returned as is. */
 export function friendlyDate(iso: string): string {
-  const m = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?/.exec(iso.trim());
+  const m = /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2}):(\d{2}))?)?)?/.exec(iso.trim());
   if (!m) return iso;
-  const [, y, mo, d] = m;
+  const [, y, mo, d, hh, mm] = m;
   const month = mo ? MONTHS[Number(mo) - 1] : undefined;
   if (!month) return y;
-  return d && Number(d) ? `${month} ${Number(d)}, ${y}` : `${month} ${y}`;
+  if (!d || !Number(d)) return `${month} ${y}`;
+  const day = `${month} ${Number(d)}, ${y}`;
+  if (hh === undefined) return day;
+  const h = Number(hh);
+  return `${day}, ${h % 12 || 12}:${mm} ${h < 12 ? "AM" : "PM"}`;
 }
 
 const isJpeg = (b: Uint8Array) => b[0] === 0xff && b[1] === 0xd8;
