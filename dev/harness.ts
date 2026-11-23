@@ -160,5 +160,12 @@ async function handle(cmd: string, a: any, options?: { headers?: Record<string, 
 for (const n of ["house", "boat", "hills", "garden"]) {
   put(`/home/demo/Pictures/${n}.jpg`, new Uint8Array(await (await fetch(`/dev/samples/${n}.jpg`)).arrayBuffer()));
 }
+// ?faces: also load test photos from dev/local/ (git-ignored; synthetic faces only, never committed).
+if (new URLSearchParams(location.search).has("faces")) {
+  for (const n of ["single", "tall", "wide"]) {
+    const r = await fetch(`/dev/local/${n}.jpg`);
+    if (r.ok) put(`/home/demo/Pictures/${n}.jpg`, new Uint8Array(await r.arrayBuffer()));
+  }
+}
 mkdirp("/home/demo/Projects");
 await import("../src/main.tsx");

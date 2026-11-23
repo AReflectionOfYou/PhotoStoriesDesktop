@@ -107,8 +107,10 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
       const found = await detectFaces(render(preview, edits));
       doc.photo.face_detection = { detector: found?.detector ?? "unavailable", at: new Date().toISOString(), found: found?.faces.length ?? 0 };
       for (const f of found?.faces ?? []) addFace(doc, f, app.owner, { detector: found!.detector, confidence: f.score });
+      // Keep what was found right away, so just looking at a photo never leaves "unsaved changes".
+      await writePhoto(fs, app.root, doc, app.project).catch(() => {});
       setBusy("");
-      touch();
+      force((n) => n + 1);
     })();
   }, [doc, preview]);
 
@@ -273,11 +275,16 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
         <section class="stack" aria-label="Photo">
           <Stage
             canvasRef={canvasRef}
+            size={{ w: shown.width, h: shown.height }}
             mode={mode}
             crop={edits.crop}
             faces={mode === "crop" ? [] : faces.map((f) => ({ id: f.id, box: { x: f.bbox_x, y: f.bbox_y, w: f.bbox_w, h: f.bbox_h }, name: personName(f.person_id) }))}
             selected={selected}
             onSelect={setSelected}
+            onBoxChange={(id, b) => {
+              const f = doc.faces.find((x) => x.id === id);
+              if (f) { Object.assign(f, { bbox_x: b.x, bbox_y: b.y, bbox_w: b.w, bbox_h: b.h }); touch(); }
+            }}
             onDrawn={(b) => {
               if (mode === "crop") changeEdits({ ...edits, crop: b });
               if (mode === "addFace") { const f = addFace(doc, b, app.owner, { detector: "manual" }); setSelected(f.id); touch(); }
@@ -305,7 +312,7 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
             </div>
             {mode === "addFace" && <p class="small muted">Drag a box around the face that was missed.</p>}
             {!faces.length && <p class="small muted">{doc.photo.face_detection ? "No faces were found. You can add a box by hand, or just add names below." : "Looking for faces…"}</p>}
-            {faces.length > 0 && <p class="small muted">Click a box (or choose it below) and type the person's name.</p>}
+            {faces.length > 0 && <p class="small muted">Drag a box to move it, or its yellow corner to resize it. Then type each person's name below.</p>}
             {faces.map((f, i) => (
               <FaceRow key={f.id} index={i + 1} name={personName(f.person_id)} selected={selected === f.id} knownNames={knownNames}
                 onSelect={() => setSelected(f.id)} onName={(n) => nameFace(f.id, n)} onRemove={() => { dismissFace(doc, f.id, app.owner); touch(); }} />
@@ -360,36 +367,94 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
   );
 }
 
-/** The picture with face boxes, and dragging to crop or add a box. */
-function Stage({ canvasRef, mode, crop, faces, selected, onSelect, onDrawn }: {
-  canvasRef: preact.RefObject<HTMLCanvasElement>; mode: Mode; crop: Box; faces: { id: string; box: Box; name: string }[];
-  selected: string | null; onSelect(id: string): void; onDrawn(b: Box): void;
+/**
+ * The picture with face boxes. The picture and its frame are given the same
+ * explicit size, so boxes (placed as fractions of the frame) sit exactly on the
+ * faces whether the photo is limited by width or by height. Boxes can be moved
+ * by dragging and resized from their corner; drag on the photo to crop or to
+ * add a box.
+ */
+function Stage({ canvasRef, size, mode, crop, faces, selected, onSelect, onDrawn, onBoxChange }: {
+  canvasRef: preact.RefObject<HTMLCanvasElement>; size: { w: number; h: number }; mode: Mode; crop: Box; faces: { id: string; box: Box; name: string }[];
+  selected: string | null; onSelect(id: string): void; onDrawn(b: Box): void; onBoxChange(id: string, b: Box): void;
 }) {
+  const wrap = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const [avail, setAvail] = useState({ w: 800, h: 600 });
   const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [moving, setMoving] = useState<{ id: string; kind: "move" | "resize"; px: number; py: number; start: Box; box: Box; moved: boolean } | null>(null);
+
+  useEffect(() => {
+    const measure = () => wrap.current && setAvail({ w: wrap.current.clientWidth, h: Math.max(240, window.innerHeight * 0.68) });
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (wrap.current) ro.observe(wrap.current);
+    window.addEventListener("resize", measure);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
+  const scale = Math.min(1, avail.w / size.w, avail.h / size.h);
+  const dw = Math.round(size.w * scale), dh = Math.round(size.h * scale);
+
   const at = (e: PointerEvent) => {
     const r = ref.current!.getBoundingClientRect();
     return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
   };
+  const clampBox = (b: Box): Box => {
+    const w = Math.min(1, Math.max(0.01, b.w)), h = Math.min(1, Math.max(0.01, b.h));
+    return { x: Math.min(1 - w, Math.max(0, b.x)), y: Math.min(1 - h, Math.max(0, b.y)), w, h };
+  };
   const box = drag && { x: Math.min(drag.x0, drag.x1), y: Math.min(drag.y0, drag.y1), w: Math.abs(drag.x1 - drag.x0), h: Math.abs(drag.y1 - drag.y0) };
   const pct = (b: Box) => `left:${b.x * 100}%;top:${b.y * 100}%;width:${b.w * 100}%;height:${b.h * 100}%`;
+
+  function startBox(e: PointerEvent, id: string, b: Box, kind: "move" | "resize") {
+    if (mode !== "view") return;
+    e.stopPropagation();
+    e.preventDefault();
+    ref.current!.setPointerCapture(e.pointerId);
+    setMoving({ id, kind, px: e.clientX, py: e.clientY, start: b, box: b, moved: false });
+  }
+
   return (
-    <div
-      ref={ref}
-      class="stage"
-      style={mode !== "view" ? "cursor:crosshair; touch-action:none" : ""}
-      onPointerDown={(e) => { if (mode === "view") return; const p = at(e); setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y }); ref.current!.setPointerCapture(e.pointerId); }}
-      onPointerMove={(e) => { if (drag) { const p = at(e); setDrag({ ...drag, x1: p.x, y1: p.y }); } }}
-      onPointerUp={() => { if (box && box.w > 0.02 && box.h > 0.02) onDrawn(box); setDrag(null); }}
-    >
-      <canvas ref={canvasRef} role="img" aria-label="The photo" />
-      {mode === "crop" && !box && <div class="drag" style={pct(crop)} />}
-      {box && <div class="drag" style={pct(box)} />}
-      {faces.map((f, i) => (
-        <button key={f.id} class={`box ${selected === f.id ? "selected" : ""} ${f.name ? "" : "unnamed"}`} style={pct(f.box)} aria-label={`Face ${i + 1}${f.name ? `: ${f.name}` : ", not named yet"}`} onClick={(e) => { e.stopPropagation(); onSelect(f.id); }}>
-          <span class="tag">{f.name || `Face ${i + 1}`}</span>
-        </button>
-      ))}
+    <div ref={wrap} class="stage-wrap">
+      <div
+        ref={ref}
+        class="stage"
+        style={`width:${dw}px;height:${dh}px;${mode !== "view" ? "cursor:crosshair;" : ""}touch-action:none`}
+        onPointerDown={(e) => { if (mode === "view") return; const p = at(e); setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y }); ref.current!.setPointerCapture(e.pointerId); }}
+        onPointerMove={(e) => {
+          if (drag) { const p = at(e); setDrag({ ...drag, x1: p.x, y1: p.y }); return; }
+          if (!moving) return;
+          const dx = (e.clientX - moving.px) / dw, dy = (e.clientY - moving.py) / dh;
+          const s0 = moving.start;
+          const next = moving.kind === "move" ? clampBox({ ...s0, x: s0.x + dx, y: s0.y + dy }) : clampBox({ ...s0, w: s0.w + dx, h: s0.h + dy });
+          setMoving({ ...moving, box: next, moved: moving.moved || Math.abs(e.clientX - moving.px) + Math.abs(e.clientY - moving.py) > 3 });
+        }}
+        onPointerUp={() => {
+          if (drag) { if (box && box.w > 0.02 && box.h > 0.02) onDrawn(box); setDrag(null); return; }
+          if (moving) { if (moving.moved) onBoxChange(moving.id, moving.box); onSelect(moving.id); setMoving(null); }
+        }}
+      >
+        <canvas ref={canvasRef} role="img" aria-label="The photo" style={`width:${dw}px;height:${dh}px`} />
+        {mode === "crop" && !box && <div class="drag" style={pct(crop)} />}
+        {box && <div class="drag" style={pct(box)} />}
+        {faces.map((f, i) => {
+          const b = moving?.id === f.id ? moving.box : f.box;
+          return (
+            <div key={f.id} role="button" tabIndex={0} class={`box ${selected === f.id ? "selected" : ""} ${f.name ? "" : "unnamed"}`} style={pct(b)}
+              aria-label={`Face ${i + 1}${f.name ? `: ${f.name}` : ", not named yet"}. Drag to move.`}
+              onPointerDown={(e) => startBox(e, f.id, f.box, "move")}
+              onKeyDown={(e) => {
+                const step = e.shiftKey ? 0.02 : 0.005;
+                const d: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(f.id); }
+                else if (d[e.key]) { e.preventDefault(); onBoxChange(f.id, clampBox({ ...f.box, x: f.box.x + d[e.key][0], y: f.box.y + d[e.key][1] })); }
+              }}>
+              <span class="tag">{f.name || `Face ${i + 1}`}</span>
+              <span class="handle" aria-hidden="true" onPointerDown={(e) => startBox(e, f.id, f.box, "resize")} />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -398,7 +463,7 @@ function FaceRow({ index, name, selected, knownNames, onSelect, onName, onRemove
   const [value, setValue] = useState(name);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => setValue(name), [name]);
-  useEffect(() => { if (selected) input.current?.focus(); }, [selected]);
+  useEffect(() => { if (selected) input.current?.focus({ preventScroll: true }); }, [selected]);
   return (
     <div class="row" style={selected ? "background:#fff;border-radius:10px;padding:4px" : "padding:4px"}>
       <span class="small" style="width:4.5rem">Face {index}</span>

@@ -43,11 +43,12 @@ export async function detectFaces(image: ImageBitmap | HTMLCanvasElement): Promi
   const loaded = await load();
   if (!loaded) return null;
   const { width, height } = image;
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d")!;
   const found: FaceBox[] = [];
   try {
     for (const tile of tilesFor(width, height)) {
+      // A fresh canvas per tile: some engines keep the first size they saw for a canvas.
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d")!;
       const scale = Math.min(1, 1280 / Math.max(tile.w, tile.h));
       canvas.width = Math.round(tile.w * scale);
       canvas.height = Math.round(tile.h * scale);
@@ -56,13 +57,12 @@ export async function detectFaces(image: ImageBitmap | HTMLCanvasElement): Promi
         const b = d.boundingBox;
         if (b) found.push(toImageBox(tile, { x: b.originX / scale, y: b.originY / scale, w: b.width / scale, h: b.height / scale }, d.categories?.[0]?.score ?? 0, width, height));
       }
+      canvas.width = canvas.height = 0;
       await new Promise((r) => setTimeout(r, 0));
     }
     return { faces: mergeBoxes(found), detector: loaded.name };
   } catch (e) {
     console.warn("face detection failed", e);
     return null;
-  } finally {
-    canvas.width = canvas.height = 0;
   }
 }
