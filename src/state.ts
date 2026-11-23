@@ -5,7 +5,7 @@ import { useContext } from "preact/hooks";
 import type { ProjectData } from "photostories-core";
 import type { Settings } from "./lib/settings";
 
-export const APP = { name: "photostories-desktop", version: "0.1.1" };
+export const APP = { name: "photostories-desktop", version: "0.1.2" };
 
 export interface AppState {
   settings: Settings;
