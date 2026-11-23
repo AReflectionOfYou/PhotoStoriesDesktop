@@ -1,7 +1,7 @@
 {
   "name": "photostories-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Photo Stories for your computer: tell the stories behind your special photos and keep them in a permanent archive.",
   "license": "MIT",
   "type": "module",
