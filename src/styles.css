@@ -107,3 +107,46 @@ table.list td, table.list th { text-align: left; padding: 6px 8px; border-bottom
 .compare-tip .no, .compare-tip .yes { display: inline-block; min-width: 5.5rem; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
 .compare-tip .no { color: var(--warn); }
 .compare-tip .yes { color: var(--make-ink); }
+
+/* Photo trays: tiles always fill their grid cell, whatever the photo's size. */
+.columns > * { min-width: 0; }
+.grid > li { min-width: 0; }
+.grid button.tile, .grid label.tile, .grid li.tile { width: 100%; min-width: 0; box-sizing: border-box; }
+.grid .tile > div { width: 100%; aspect-ratio: 1; overflow: hidden; border-radius: 10px; }
+.grid img { max-width: 100%; height: 100%; }
+.path { overflow-wrap: anywhere; }
+@media (max-width: 980px) { .columns { grid-template-columns: minmax(0, 1fr); } }
+
+/* Selecting several */
+.grid .picked > div { outline: 4px solid var(--make-ink); outline-offset: -4px; }
+.grid .picked img { opacity: 0.85; }
+.pick-mark { position: absolute; top: 6px; right: 6px; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 999px; background: var(--make-ink); color: #fff; font-weight: 700; font-size: 0.85rem; display: grid; place-items: center; box-shadow: 0 0 0 2px #fff; }
+.pickbar { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; position: sticky; top: 0; z-index: 2; }
+
+/* Collections */
+.collection-bar { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
+.collection-bar select { width: auto; min-width: 14rem; }
+.collection-bar label.inline > span { font-weight: 600; }
+
+/* Working through a set */
+.deck-nav { gap: 6px; }
+.deck-nav button { min-height: 34px; }
+.deck-strip { list-style: none; margin: 0; padding: 2px; display: flex; gap: 8px; overflow-x: auto; }
+.deck-strip button { all: unset; cursor: pointer; display: block; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 2px solid transparent; }
+.deck-strip button > div, .deck-strip img, .deck-strip .ph { width: 100%; height: 100%; object-fit: cover; display: block; background: #fff; }
+.deck-strip button.current { border-color: var(--make-ink); box-shadow: 0 0 0 2px var(--make-ink); }
+.deck-strip button:focus-visible { outline: 3px solid var(--ink); }
+
+/* Story tips: a column beside the story that stays open until closed */
+.editor.with-tips { grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr) minmax(260px, 300px); }
+.tips { position: sticky; top: 0; max-height: calc(100vh - 150px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-top: 5px solid var(--make); border-radius: var(--radius); }
+.tips-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 10px 8px 14px; border-bottom: 1px solid var(--line); }
+.tips-bar h2 { font-size: 1rem; }
+.tips-bar button { min-height: 30px; padding: 0 10px; }
+.tips-body { padding: 12px 14px 14px; overflow: auto; font-size: 0.9rem; }
+.tips-body h3 { font-size: 0.96rem; }
+.tips-body ul { margin: 0; padding-left: 1.2rem; }
+.tips-body .compare-tip { padding-left: 0; }
+.tips-body .compare-tip span { display: block; min-width: 0; }
+.finish-grid { max-height: 34vh; overflow: auto; }
+.grid li.tile { display: flex; flex-direction: column; gap: 2px; }

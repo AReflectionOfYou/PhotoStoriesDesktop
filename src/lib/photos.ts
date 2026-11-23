@@ -10,7 +10,7 @@ import { fs } from "./tauri-adapter";
 
 const isJpegName = (n: string) => /\.jpe?g$/i.test(n);
 
-export async function copyIntoProject(root: string, project: ProjectData, settings: Settings, sourcePath: string): Promise<{ doc: PhotoDoc; existing: boolean }> {
+export async function copyIntoProject(root: string, project: ProjectData, settings: Settings, sourcePath: string, collectionId?: string): Promise<{ doc: PhotoDoc; existing: boolean }> {
   const name = sourcePath.split("/").pop() ?? "photo";
   let from = sourcePath;
   let temp: string | null = null;
@@ -30,6 +30,7 @@ export async function copyIntoProject(root: string, project: ProjectData, settin
       copySize: settings.copySize,
       maxLongEdge: settings.maxLongEdge,
       app: APP,
+      collectionId,
     });
     if (r.existing) return r;
     const doc = r.doc;
@@ -55,6 +56,7 @@ export interface ProjectPhoto {
   sourcePath: string;
   storied: boolean;
   created: string;
+  collectionId: string | null;
 }
 
 export async function projectPhotos(root: string): Promise<ProjectPhoto[]> {
@@ -68,6 +70,7 @@ export async function projectPhotos(root: string): Promise<ProjectPhoto[]> {
       sourcePath: String(doc.provenance?.source_path ?? ""),
       storied: hasStory(doc),
       created: String(doc.photo.created_at ?? ""),
+      collectionId: doc.photo.collection_id ? String(doc.photo.collection_id) : null,
     });
   }
   return out.sort((a, b) => a.created.localeCompare(b.created));

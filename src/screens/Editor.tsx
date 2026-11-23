@@ -8,15 +8,16 @@ import {
   setDetails, setStory, tagFace, toEdtf, uuid, valuesFor, writePhoto, writeXmp,
   type Certainty, type EmbeddedValues, type MetadataConflict, type PhotoDoc,
 } from "photostories-core";
-import { Dialog } from "../components/Dialog";
 import { Recorder, type Finished } from "../components/Recorder";
+import { Thumb } from "../components/Thumb";
+import { StoryTips } from "../components/StoryTips";
 import { chooseProvider, describeError, type Suggestions } from "../lib/cleanup";
 import { detectFaces } from "../lib/faceDetector";
 import { bitmapOf, isUnedited, mapBox, NO_EDITS, render, scaled, toJpeg, unmapBox, uprightJpeg, type Edits } from "../lib/image";
 import { downloadProgress, preloadModel, watchDownloads } from "../lib/model";
 import { lookUpPlace, photoFacts } from "../lib/prefill";
 import { fs } from "../lib/tauri-adapter";
-import { useApp } from "../state";
+import { openPhoto, useApp } from "../state";
 
 type Mode = "view" | "crop" | "addFace";
 type Box = { x: number; y: number; w: number; h: number };
@@ -24,7 +25,7 @@ type Box = { x: number; y: number; w: number; h: number };
 const FIELD_LABEL: Record<string, string> = { title: "Title", description: "Description (the story)", date: "Date", place: "Place", keywords: "Keywords", people: "People", latitude: "Latitude", longitude: "Longitude" };
 const show = (v: unknown) => (Array.isArray(v) ? v.join(", ") : String(v ?? ""));
 
-export function Editor({ photoId, onClose }: { photoId: string; onClose(): void }) {
+export function Editor({ photoId, deck, index, onGo, onClose }: { photoId: string; deck: string[]; index: number; onGo(index: number): void; onClose(): void }) {
   const app = useApp();
   const dir = `${app.root}/photos/${photoId}`;
   const [doc, setDoc] = useState<PhotoDoc | null>(null);
@@ -37,7 +38,8 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
   const [busy, setBusy] = useState("");
   const [problem, setProblem] = useState("");
   const [saved, setSaved] = useState(false);
-  const [confirmLeave, setConfirmLeave] = useState(false);
+  /** Where the person wants to go while there are unsaved changes. */
+  const [confirmLeave, setConfirmLeave] = useState<null | (() => void)>(null);
   const [recording, setRecording] = useState(false);
   // Form fields.
   const [title, setTitle] = useState("");
@@ -51,13 +53,16 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
   const [transcriptModel, setTranscriptModel] = useState<string | null>(null);
   const [suggested, setSuggested] = useState<Suggestions | null>(null);
   const [conflicts, setConflicts] = useState<MetadataConflict[] | null>(null);
-  const [pendingSave, setPendingSave] = useState<null | ((choices: Record<string, "embedded" | "ours">) => Promise<void>)>(null);
+  const [pendingSave, setPendingSave] = useState<null | ((choices: Record<string, "embedded" | "ours">) => Promise<boolean>)>(null);
+  const conflictAnswer = useRef<((saved: boolean) => void) | null>(null);
   const [, force] = useState(0);
   const [lookingUp, setLookingUp] = useState(false);
-  const [coaching, setCoaching] = useState(false);
   const addedHere = useRef(new Set<string>());
   const [placeAlways, setPlaceAlways] = useState(true);
   const touch = () => { setDirty(true); setSaved(false); force((n) => n + 1); };
+
+  // Let Finish and Switch project save this photo first.
+  useEffect(() => () => { openPhoto.dirty = false; openPhoto.save = async () => true; }, []);
 
   // Get the speech model ready now, so Record starts at once: right away if
   // it's downloaded, or as soon as a background download finishes.
@@ -109,7 +114,7 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
       setDoc(d);
       // The first photo ever opened without a story: show how to tell one.
       if (!app.settings.storyTipsSeen && !c?.transcript && !c?.story_text) {
-        setCoaching(true);
+        app.setTipsOpen(true);
         void app.updateSettings({ storyTipsSeen: true });
       }
     })().catch((e) => setProblem(String(e)));
@@ -274,7 +279,8 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
     touch();
   }
 
-  async function save(choices?: Record<string, "embedded" | "ours">) {
+  /** Save everything; resolves to false if it failed or the person cancelled. */
+  async function save(choices?: Record<string, "embedded" | "ours">): Promise<boolean> {
     setBusy("Saving…");
     setProblem("");
     try {
@@ -307,7 +313,7 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
         setBusy("");
         setConflicts(open);
         setPendingSave(() => (picked: Record<string, "embedded" | "ours">) => save({ ...remembered, ...picked }));
-        return;
+        return new Promise<boolean>((resolve) => (conflictAnswer.current = resolve));
       }
       const values: EmbeddedValues = { ...plan.values };
       const replaced: (keyof EmbeddedValues)[] = [];
@@ -323,34 +329,74 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
       await app.saveProjectData(["people"]);
       setDirty(false);
       setSaved(true);
+      return true;
     } catch (e) {
       setProblem(`Couldn't save: ${e}`);
+      return false;
     } finally {
       setBusy("");
     }
   }
 
+  openPhoto.dirty = dirty;
+  openPhoto.save = () => save();
+
+  /** Move the photo to another collection, keeping the move in its history. */
+  async function moveTo(collectionId: string) {
+    const d = doc!;
+    const name = (id: unknown) => String(app.project.collections.find((c) => c.id === id)?.name ?? "");
+    if (d.photo.collection_id === collectionId) return;
+    d.field_history.push({ id: uuid(), group_id: d.photo.group_id, photo_id: d.photo.id, field: "collection", old_value: name(d.photo.collection_id), new_value: name(collectionId), certainty: null, changed_by: app.owner, changed_at: new Date().toISOString(), source: "person" });
+    d.photo.collection_id = collectionId;
+    await keepPeople();
+  }
+
+  /** Go somewhere else, asking first if there are unsaved changes. */
+  const leave = (go: () => void) => (dirty ? setConfirmLeave(() => go) : go());
+  const last = index >= deck.length - 1;
+
   return (
     <div class="stack">
       <div class="spread">
-        <button class="quiet" onClick={() => (dirty ? setConfirmLeave(true) : onClose())}>← All photos</button>
+        <div class="row">
+          <button class="quiet" onClick={() => leave(onClose)}>← Select another photo</button>
+          {deck.length > 1 && (
+            <span class="row deck-nav">
+              <button class="small" disabled={index === 0} onClick={() => leave(() => onGo(index - 1))} aria-label="Previous photo">‹ Previous</button>
+              <span class="small">Photo {index + 1} of {deck.length}</span>
+              <button class="small" disabled={last} onClick={() => leave(() => onGo(index + 1))} aria-label="Next photo">Next ›</button>
+            </span>
+          )}
+        </div>
         <div class="row">
           {busy && <span class="muted" role="status">{busy}</span>}
           {saved && !dirty && <span class="muted" role="status">Saved.</span>}
-          <button class="primary" disabled={!!busy || recording} onClick={() => save()}>Save</button>
+          <button class={deck.length > 1 && !last ? "" : "primary"} disabled={!!busy || recording} onClick={() => save()}>Save</button>
+          {deck.length > 1 && !last && <button class="primary" disabled={!!busy || recording} onClick={async () => { if (await save()) onGo(index + 1); }}>Save and next ›</button>}
         </div>
       </div>
+      {deck.length > 1 && (
+        <ol class="deck-strip" aria-label="Photos in this set">
+          {deck.map((id, i) => (
+            <li key={id}>
+              <button class={i === index ? "current" : ""} aria-current={i === index ? "true" : undefined} aria-label={`Photo ${i + 1}`} onClick={() => i !== index && leave(() => onGo(i))}>
+                <Thumb file={`${app.root}/photos/${id}/thumb.jpg`} />
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
       {confirmLeave && (
         <div class="notice row" role="alertdialog" aria-label="Unsaved changes">
-          <span>You have changes that aren't saved.</span>
-          <button class="primary" onClick={async () => { await save(); setConfirmLeave(false); }}>Save</button>
-          <button class="danger" onClick={onClose}>Leave without saving</button>
-          <button class="quiet" onClick={() => setConfirmLeave(false)}>Stay</button>
+          <span>You have changes to this photo that aren't saved.</span>
+          <button class="primary" onClick={async () => { const go = confirmLeave; if (await save()) { setConfirmLeave(null); go(); } }}>Save and go on</button>
+          <button class="danger" onClick={() => { const go = confirmLeave; setConfirmLeave(null); go(); }}>Leave without saving</button>
+          <button class="quiet" onClick={() => setConfirmLeave(null)}>Stay</button>
         </div>
       )}
       {problem && <p class="notice bad" role="alert">{problem}</p>}
 
-      <div class="editor">
+      <div class={`editor ${app.tipsOpen ? "with-tips" : ""}`}>
         <section class="stack" aria-label="Photo">
           <Stage
             canvasRef={canvasRef}
@@ -410,7 +456,7 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
           <div class="card stack">
             <div class="spread">
               <h3>Tell the story</h3>
-              <button class="quiet small" onClick={() => setCoaching(true)}>How to tell it</button>
+              <button class="quiet small" onClick={() => app.setTipsOpen(!app.tipsOpen)} aria-pressed={app.tipsOpen}>{app.tipsOpen ? "Hide the tips" : "How to tell it"}</button>
             </div>
             <p class="small muted">Skip “This is a photo of…”. Start in the moment: “That summer, we drove to the lake every Sunday…” Then say who's there, what was happening, and why it matters to you.</p>
             {(dateText || place || peopleHere.length > 0) && (
@@ -454,14 +500,15 @@ export function Editor({ photoId, onClose }: { photoId: string; onClose(): void 
             )}
             <label>Notes<textarea rows={3} value={notes} placeholder="Written on the back: “Lake Vermilion, '65”. Original print is in Mom's blue album. Not sure if that's Uncle Joe or Uncle Pete." onInput={(e) => { setNotes(e.currentTarget.value); touch(); }} /></label>
             <p class="small muted">The story is what happened, in your words. Notes are the facts around the photo: what's written on the back, who took it, where the original is kept, and anything you're unsure of or want to ask someone.</p>
+            <CollectionPicker value={doc.photo.collection_id ? String(doc.photo.collection_id) : ""} onMove={moveTo} />
             {suggested && <SuggestionsPanel s={suggested} title={title} date={dateText} place={place} peopleHere={peopleHere.map(personName)}
               onTitle={(v) => { setTitle(v); touch(); }} onDate={(v) => { setDateText(v); touch(); }} onPlace={(v) => { setPlace(v); touch(); }} onPerson={addPersonWithoutFace} onDone={() => setSuggested(null)} />}
           </div>
         </section>
+        {app.tipsOpen && <StoryTips onClose={() => app.setTipsOpen(false)} />}
       </div>
 
-      {coaching && <StoryCoach known={{ when: dateText, where: place, who: peopleHere.map(personName) }} onClose={() => setCoaching(false)} />}
-      {conflicts && pendingSave && <ConflictDialog conflicts={conflicts} onCancel={() => { setConflicts(null); setPendingSave(null); }} onDone={async (picked) => { setConflicts(null); const go = pendingSave; setPendingSave(null); await go(picked); }} />}
+      {conflicts && pendingSave && <ConflictDialog conflicts={conflicts} onCancel={() => { setConflicts(null); setPendingSave(null); conflictAnswer.current?.(false); }} onDone={async (picked) => { setConflicts(null); const go = pendingSave; setPendingSave(null); conflictAnswer.current?.(await go(picked)); }} />}
     </div>
   );
 }
@@ -486,7 +533,7 @@ function Stage({ canvasRef, size, mode, crop, faces, selected, onSelect, onDrawn
   useEffect(() => {
     const measure = () => wrap.current && setAvail({ w: wrap.current.clientWidth, h: Math.max(240, window.innerHeight * 0.68) });
     measure();
-    const ro = new ResizeObserver(measure);
+    const ro = new ResizeObserver(() => requestAnimationFrame(measure));
     if (wrap.current) ro.observe(wrap.current);
     window.addEventListener("resize", measure);
     return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
@@ -672,33 +719,27 @@ function SuggestionsPanel({ s, title, date, place, peopleHere, onTitle, onDate, 
   );
 }
 
-/** Tips for telling a photo's story, as if to someone sitting beside you. */
-function StoryCoach({ known, onClose }: { known: { when: string; where: string; who: string[] }; onClose(): void }) {
-  const filled = [known.when && `When: ${known.when}`, known.where && `Where: ${known.where}`, known.who.length > 0 && `Who: ${known.who.join(", ")}`].filter(Boolean) as string[];
-  return (
-    <Dialog title="How to tell the story" onClose={onClose}>
-      <div class="stack coach">
-        <p>Tell it as if a grandchild were sitting beside you, looking at the photo with you. They can see the picture; what they can't see is what you remember.</p>
-        <h3>Start in the moment, not with the photo</h3>
-        <p class="compare-tip"><span class="no">Instead of</span> “This is a photo of my mother at the lake.”</p>
-        <p class="compare-tip"><span class="yes">Try</span> “Every Sunday that summer, Mom packed sandwiches and we drove out to the lake.”</p>
-        <p class="compare-tip"><span class="yes">Or</span> “I'll never forget how cold that water was.”</p>
-        <h3>Then, in any order</h3>
-        <ul>
-          <li><strong>Who's there</strong>, and how you're connected: “my mother, Rose Martinez, on the left, and her brother Joe.”</li>
-          <li><strong>What was happening</strong> just before and after the picture was taken.</li>
-          <li><strong>Small details</strong>: what people said, the smells, the sounds, the car you drove there in.</li>
-          <li><strong>Why it matters</strong>: what it tells about them, or about you, and what you want people to know.</li>
-        </ul>
-        <h3>Check what's already known</h3>
-        {filled.length
-          ? <p>These are already filled in from the photo or from your names: {filled.join(" · ")}. Check that they're right; there's no need to say them again, unless the story behind them matters.</p>
-          : <p>Many photos carry their own date, time and location. When they do, they're filled in under When and Where, so check those first.</p>}
-        <h3>Don't worry about getting it perfect</h3>
-        <p>Pauses, “um”s and starting over are fine. You can record more later, and the cleanup tidies the words while keeping them yours.</p>
-        <div class="row"><button class="primary" onClick={onClose}>Got it</button></div>
+/** Which collection the photo is in; changing it moves the photo (kept in its history). */
+function CollectionPicker({ value, onMove }: { value: string; onMove(id: string): void }) {
+  const app = useApp();
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  if (adding) {
+    return (
+      <div class="row" style="align-items:end">
+        <label style="flex:1">New collection<input type="text" autocomplete="off" value={name} placeholder="e.g. Lake cabin album" onInput={(e) => setName(e.currentTarget.value)} ref={(el) => el?.focus()} /></label>
+        <button disabled={!name.trim()} onClick={async () => { const id = await app.addCollection(name); onMove(id); setAdding(false); setName(""); }}>Add and move</button>
+        <button class="quiet" onClick={() => setAdding(false)}>Cancel</button>
       </div>
-    </Dialog>
+    );
+  }
+  return (
+    <label>Collection
+      <select value={value} onChange={(e) => (e.currentTarget.value === "+new" ? setAdding(true) : onMove(e.currentTarget.value))}>
+        {app.project.collections.map((c) => <option key={String(c.id)} value={String(c.id)}>{String(c.name)}</option>)}
+        <option value="+new">New collection…</option>
+      </select>
+    </label>
   );
 }
 

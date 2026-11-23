@@ -129,6 +129,7 @@ async function handle(cmd: string, a: any, options?: { headers?: Record<string, 
     case "place_name": // stands in for OpenStreetMap; records what would be sent
       ((window as any).__placeCalls ??= []).push([a.lat, a.lon]);
       return JSON.stringify({ suburb: "7th Arrondissement", city: "Paris", state: "Ile-de-France", region: "Metropolitan France", country: "France" });
+    case "plugin:window|close": (window as any).__closed = true; return;
     case "get_api_key": return null;
     case "set_api_key": case "delete_api_key": return;
     case "plugin:path|resolve_directory": return "/config";

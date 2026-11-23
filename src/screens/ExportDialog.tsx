@@ -15,7 +15,8 @@ export function ExportDialog({ onClose }: { onClose(): void }) {
   const app = useApp();
   const [photos, setPhotos] = useState<ProjectPhoto[]>([]);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
-  const [which, setWhich] = useState<"storied" | "chosen">("storied");
+  const [which, setWhich] = useState<"storied" | "collection" | "chosen">("storied");
+  const [collection, setCollection] = useState<string>(app.collectionId ?? String(app.project.collections[0]?.id ?? ""));
   const [dest, setDest] = useState(`${app.root}/exports`);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ExportResult | null>(null);
@@ -28,12 +29,14 @@ export function ExportDialog({ onClose }: { onClose(): void }) {
     });
   }, []);
   const storied = photos.filter((p) => p.storied);
+  const inCollection = storied.filter((p) => p.collectionId === collection);
+  const several = app.project.collections.length > 1;
 
   async function run() {
     setBusy(true);
     setProblem("");
     try {
-      const r = await exportBundle(fs, app.root, dest, { photoIds: which === "chosen" ? [...chosen] : undefined, generator: APP });
+      const r = await exportBundle(fs, app.root, dest, { photoIds: which === "chosen" ? [...chosen] : which === "collection" ? inCollection.map((p) => p.id) : undefined, generator: APP });
       setResult(r);
     } catch (e) {
       setProblem(String(e));
@@ -59,6 +62,12 @@ export function ExportDialog({ onClose }: { onClose(): void }) {
         <div class="stack">
           <p>An archive is a single zip file following the Library of Congress BagIt standard. It holds your copies of the photos, everything you recorded about them, and a page that shows them all in any web browser.</p>
           <label class="inline"><input type="radio" name="which" checked={which === "storied"} onChange={() => setWhich("storied")} /> Every photo with a story ({storied.length})</label>
+          {several && (
+            <label class="inline"><input type="radio" name="which" checked={which === "collection"} onChange={() => setWhich("collection")} /> Every photo with a story in
+              <select value={collection} onChange={(e) => { setCollection(e.currentTarget.value); setWhich("collection"); }} aria-label="Collection" style="width:auto">
+                {app.project.collections.map((c) => <option key={String(c.id)} value={String(c.id)}>{String(c.name)}</option>)}
+              </select> ({inCollection.length})</label>
+          )}
           <label class="inline"><input type="radio" name="which" checked={which === "chosen"} onChange={() => setWhich("chosen")} /> Only the ones I choose ({chosen.size})</label>
           {which === "chosen" && (
             <ul class="grid" style="max-height: 40vh; overflow: auto;">
@@ -74,7 +83,7 @@ export function ExportDialog({ onClose }: { onClose(): void }) {
           )}
           <div class="spread"><span class="small">Save to: {dest}</span><button onClick={async () => { const f = await pickFolder("Where should the archive go?"); if (f) setDest(f); }}>Change…</button></div>
           {problem && <p class="notice bad" role="alert">{problem}</p>}
-          <div class="row"><button class="primary" disabled={busy || (which === "storied" ? !storied.length : !chosen.size)} onClick={run}>{busy ? "Making the archive…" : "Export"}</button><button class="quiet" onClick={onClose}>Cancel</button></div>
+          <div class="row"><button class="primary" disabled={busy || (which === "storied" ? !storied.length : which === "collection" ? !inCollection.length : !chosen.size)} onClick={run}>{busy ? "Making the archive…" : "Export"}</button><button class="quiet" onClick={onClose}>Cancel</button></div>
         </div>
       )}
     </Dialog>
