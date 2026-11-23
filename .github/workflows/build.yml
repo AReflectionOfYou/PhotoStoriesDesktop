@@ -30,6 +30,9 @@ jobs:
           - os: ubuntu-22.04
             args: ""
     runs-on: ${{ matrix.os }}
+    env:
+      # whisper.cpp uses C++17 file APIs that need macOS 10.15+; the app targets macOS 11+.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

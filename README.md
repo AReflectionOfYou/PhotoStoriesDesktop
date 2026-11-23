@@ -8,7 +8,7 @@ Part of the [A Reflection of You](https://github.com/AReflectionOfYou) collectio
 
 ## Status
 
-Version 0.1.0. Built and tested on macOS (Apple silicon). Windows and Linux builds run in CI on every push; see the Actions tab for installers.
+Version 0.1.0. Built and tested on macOS (Apple silicon; macOS 11 or later). Windows and Linux builds run in CI on every push; see the Actions tab for installers.
 
 ## What it does
 
