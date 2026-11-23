@@ -18,7 +18,7 @@
     "@tauri-apps/api": "2.12.5",
     "@tauri-apps/plugin-dialog": "2.8.4",
     "@tauri-apps/plugin-opener": "2.7.3",
-    "photostories-core": "github:AReflectionOfYou/PhotoStoriesCore#v0.1.2",
+    "photostories-core": "github:AReflectionOfYou/PhotoStoriesCore#v0.1.3",
     "preact": "10.29.8"
   },
   "devDependencies": {
