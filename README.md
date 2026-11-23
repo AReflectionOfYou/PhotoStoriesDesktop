@@ -8,7 +8,10 @@ Part of the [A Reflection of You](https://github.com/AReflectionOfYou) collectio
 
 ## Status
 
-Version 0.1.1. Built and tested on macOS (Apple silicon; macOS 11 or later); Windows and Linux builds are made and tested in CI. Installers are on the [Releases page](https://github.com/AReflectionOfYou/PhotoStoriesDesktop/releases). They are not yet code-signed, so the first time you open the app, macOS asks you to right-click it and choose Open, and Windows may show a SmartScreen warning ("More info", then "Run anyway").
+Version 0.1.1. Built and tested on macOS (Apple silicon; macOS 11 or later); Windows and Linux builds are made and tested in CI. Installers are on the [Releases page](https://github.com/AReflectionOfYou/PhotoStoriesDesktop/releases). They are not yet code-signed, so the first time you open the app your computer warns you:
+
+- **Mac:** open Photo Stories once and close the warning with **Done** (not Move to Trash). Then open **System Settings → Privacy & Security**, scroll down to Security, click **Open Anyway** next to "Photo Stories", confirm, and choose **Open Anyway** again. You only do this once. If the warning says the app "is damaged and can't be opened", move it to Applications and run once in Terminal: `xattr -dr com.apple.quarantine "/Applications/Photo Stories.app"`
+- **Windows:** if SmartScreen appears, choose **More info**, then **Run anyway**.
 
 ## What it does
 
